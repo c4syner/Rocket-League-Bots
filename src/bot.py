@@ -57,7 +57,7 @@ class MyBot(BaseAgent):
         self.lastCall = 0
     def get_output(self, packet: GameTickPacket) -> SimpleControllerState:
         ball_location = Vec3(packet.game_ball.physics.location)
-
+        ball_velocity = Vec3(packet.game_ball.physics.velocity)
         main_car = packet.game_cars[self.index]
 
         car_location = Vec3(main_car.physics.location)
@@ -65,19 +65,47 @@ class MyBot(BaseAgent):
 
         car_to_ball = car_location-ball_location
         # Find the direction of our car using the Orientation class
+
         car_orientation = Orientation(main_car.physics.rotation)
         car_direction = car_orientation.forward
+
         turn = self.find_correction(car_direction, car_to_ball)
         drift = self.determineDrift(self.find_correction_normal(car_direction, car_to_ball))
         boost = self.manageBoost(self.find_correction_normal(car_direction, car_to_ball))
-        jump = self.determineJump(car_location, ball_location)
+        jump = self.doAerial(car_location,ball_location, car_orientation)[0]
+        pitch = self.doAerial(car_location,ball_location)[1]
+
+
+
+
         self.controller_state.throttle = 1.0
         self.controller_state.steer = turn
         self.controller_state.handbrake = drift
         self.controller_state.boost = boost
         self.controller_state.jump = jump
+        self.controller_state.pitch = pitch
         return self.controller_state
+    def doAerial(self, car_location, ball_location):
+        
+        mirrorBall = Vec3(ball_location.x,ball_location.y,0)
+        mirrorCar = Vec3(car_location.x, car_location.y, 0)
+        leg = self.Distance3D(mirrorBall, ball_location)
+        legCar = self.Distance3D(mirrorBall, mirrorCar)
+        hypotenuse = self.Distance3D(mirrorCar, ball_location)
+        theta = math.degrees(math.asin(leg/hypotenuse))
+        if(self.index == 0):
+            self.renderer.begin_rendering()
+            self.renderer.draw_line_3d(mirrorBall, ball_location,self.renderer.cyan()) #Draw Leg
+            self.renderer.draw_line_3d(mirrorCar, mirrorBall, self.renderer.lime()) #Draw Leg between car and ball
+            self.renderer.draw_line_3d(mirrorCar, ball_location, self.renderer.red()) #Draw hypotenuse
+            self.renderer.end_rendering()
+        if(self.index == 0):
+            print(leg)
+        #All data acquired start determining values for flight
+        if(leg < 100):
+            return [0, 0]
 
+        return [0,0]
     def Distance3D(self, p1, p2):
         xAddend = math.pow((p2.x - p1.x), 2)
         yAddend = math.pow((p2.y - p1.y), 2)
