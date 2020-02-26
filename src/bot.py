@@ -2,10 +2,12 @@ import math
 
 from rlbot.agents.base_agent import BaseAgent, SimpleControllerState
 from rlbot.utils.structures.game_data_struct import GameTickPacket
+from rlbot.utils.game_state_util import GameState, BallState, CarState, Physics, Vector3, Rotator, GameInfoState
 
 from util.orientation import Orientation
 from util.vec import Vec3
 import time
+
 
 
 class PID:
@@ -56,10 +58,58 @@ class MyBot(BaseAgent):
         # This runs once before the bot starts up
         self.controller_state = SimpleControllerState()
         self.pid = PID(10, 0, 0.5)
-        self.lastCall = 0
-        self.readyToJump = 0
+        self.error = 0
+        self.jump = 0
+        self.throttle = 0
+        self.turn = 0
+        self.drift = 0
+        self.boost = 0
+        self.pitch = 0
+        self.timeToDrive = 0
 
     def get_output(self, packet: GameTickPacket) -> SimpleControllerState:
+        self.ballChase(packet)
+        self.getBallLoc(packet, 5, 1)
+
+
+
+        self.controller_state.throttle = self.throttle
+        self.controller_state.steer = self.turn
+        self.controller_state.handbrake = self.drift
+        self.controller_state.boost = self.boost
+        self.controller_state.jump = self.jump
+        self.controller_state.pitch = self.pitch
+        return self.controller_state
+    def getBallLoc(self, packet, secs, test=0):#Arg: Seconds into future from current time #Max of 6
+        ball_prediction = self.get_ball_prediction_struct()
+        currentTime = packet.game_info.seconds_elapsed
+        goalTime = currentTime + secs
+        timeList = []
+        locations = []
+        if ball_prediction is not None:
+            for i in range(0, ball_prediction.num_slices):
+                prediction_slice = ball_prediction.slices[i]
+                closestTime = prediction_slice.game_seconds
+                locations.append(prediction_slice.physics.location)
+                timeError = math.fabs(goalTime - closestTime)
+                timeList.append([timeError, i])
+            if(test == 1):
+                self.renderer.begin_rendering()
+                self.renderer.draw_polyline_3d(locations, self.renderer.cyan())
+                self.renderer.end_rendering()
+
+            t = min(timeList, key=lambda x:abs(x[0]-0))
+            bestSlice = ball_prediction.slices[t[1]]
+            location = bestSlice.physics.location
+            if(self.index == 0):
+                print(location)
+        if(test == 0):
+            return location
+
+        else:
+            return location
+
+    def ballChase(self, packet):
         ball_location = Vec3(packet.game_ball.physics.location)
         ball_velocity = Vec3(packet.game_ball.physics.velocity)
         main_car = packet.game_cars[self.index]
@@ -72,19 +122,23 @@ class MyBot(BaseAgent):
         car_orientation = Orientation(main_car.physics.rotation)
         car_direction = car_orientation.forward
 
-        turn = self.find_correction(car_direction, car_to_ball)
-        drift = self.determineDrift(self.find_correction_normal(car_direction, car_to_ball))
-        boost = self.manageBoost(self.find_correction_normal(car_direction, car_to_ball))
-        jump = self.doAerial(car_location, ball_location, car_orientation)[0]
-        pitch = self.doAerial(car_location, ball_location, car_orientation)[1]
+        distFromBall = self.Distance3D(car_location, ball_location)
+        mirrorBall = Vec3(ball_location.x, ball_location.y, 0)
+        mirrorCar = Vec3(car_location.x, car_location.y, 0)
+        leg = self.Distance3D(mirrorBall, ball_location)
+        legCar = self.Distance3D(mirrorBall, mirrorCar)
+        distFromGround = self.Distance3D(car_location, mirrorCar)
+        hypotenuse = self.Distance3D(mirrorCar, ball_location)
+        theta = math.asin(leg / hypotenuse)
 
-        self.controller_state.throttle = 1.0
-        self.controller_state.steer = turn
-        self.controller_state.handbrake = drift
-        self.controller_state.boost = boost
-        self.controller_state.jump = jump
-        self.controller_state.pitch = pitch
-        return self.controller_state
+        if(legCar < 400):
+            self.boost = 0
+            self.throttle = self.map(legCar, 400, 0, 1, 0)
+        else:
+            self.turn = self.find_correction(car_direction, car_to_ball)
+            self.drift = self.determineDrift(self.find_correction_normal(car_direction, car_to_ball))
+            self.boost = self.manageBoost(self.find_correction_normal(car_direction, car_to_ball))
+            self.throttle = 1
 
     def doAerial(self, car_location, ball_location, car_orientation):
         jump = 0
@@ -109,20 +163,31 @@ class MyBot(BaseAgent):
             jump = 0
             pitch = 0
             return [0, 0]
-        elif(self.readyToJump == 0):
-            pitch = 0
+        elif(distFromBall > 2000):
             jump = 0
+            pitch = 0
+            return [0,0]
+        elif(distFromGround > 18):
+            jump = 0
+            pitch = 0
+            return [0,0]
+        elif(self.readyToJump == 0):
+            jump = 0
+            pitch = 0
             return [0,0]
         else:
-            if(self.index == 0):
-                print("Considered jumping")
+
+
             jump = 1
             error = theta-car_angle
             if(error > 0):
                 pitch = 1
             elif(error < 0 ):
                 pitch = -1
-            pass
+            if(self.readyToJump == 0):
+                jump = 0
+        if(self.index == 0):
+            print(distFromGround)
         return [jump, pitch]
 
     def Distance3D(self, p1, p2):
@@ -152,19 +217,17 @@ class MyBot(BaseAgent):
         return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
 
     def determineDrift(self, correct):
-        if (correct > .4):
+        if (correct > .3):
             return 1
-        elif (correct < -.4):
+        elif (correct < -.3):
             return 1
         else:
             return 0
 
     def manageBoost(self, correct):
         if ((correct < .2) and (correct > -.2)):
-            self.readyToJump = 1
             return 1
         else:
-            self.readyToJump = 0
             return 0
     def find_correction_normal(self, current: Vec3, ideal: Vec3) -> float:
         # Finds the angle from current to ideal vector in the xy-plane. Angle will be between -pi and +pi.
@@ -181,7 +244,7 @@ class MyBot(BaseAgent):
         # At this ponit diff is between 0 and 12
         error = target - diff
         normal = self.map(error, -math.pi, math.pi, -1, 1)
-
+        self.error = error
         return normal
 
     def find_correction(self, current: Vec3, ideal: Vec3) -> float:
