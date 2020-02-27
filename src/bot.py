@@ -66,13 +66,11 @@ class MyBot(BaseAgent):
         self.boost = 0
         self.pitch = 0
         self.timeToDrive = 0
+        self.beenUp = 0
 
+        self.orangeGoal = Vec3(-32.90999984741211, 5758.33984375, 35.209999084472656)
     def get_output(self, packet: GameTickPacket) -> SimpleControllerState:
-        self.ballChase(packet)
-        self.getBallLoc(packet, 5, 1)
-
-
-
+        self.dribble(packet)
         self.controller_state.throttle = self.throttle
         self.controller_state.steer = self.turn
         self.controller_state.handbrake = self.drift
@@ -80,6 +78,10 @@ class MyBot(BaseAgent):
         self.controller_state.jump = self.jump
         self.controller_state.pitch = self.pitch
         return self.controller_state
+    def getLocationForeign(self, packet): #Gets location of your car, only works if there is one other ar
+        main_car = packet.game_cars[1]
+        car_location = Vec3(main_car.physics.location)
+        return car_location
     def getBallLoc(self, packet, secs, test=0):#Arg: Seconds into future from current time #Max of 6
         ball_prediction = self.get_ball_prediction_struct()
         currentTime = packet.game_info.seconds_elapsed
@@ -93,7 +95,7 @@ class MyBot(BaseAgent):
                 locations.append(prediction_slice.physics.location)
                 timeError = math.fabs(goalTime - closestTime)
                 timeList.append([timeError, i])
-            if(test == 1):
+            if(test == 1 and self.index == 0):
                 self.renderer.begin_rendering()
                 self.renderer.draw_polyline_3d(locations, self.renderer.cyan())
                 self.renderer.end_rendering()
@@ -101,15 +103,95 @@ class MyBot(BaseAgent):
             t = min(timeList, key=lambda x:abs(x[0]-0))
             bestSlice = ball_prediction.slices[t[1]]
             location = bestSlice.physics.location
-            if(self.index == 0):
-                print(location)
         if(test == 0):
             return location
 
         else:
             return location
+    def findBallGround(self): #returns when ball hits ground next (game seconds)
+        ball_prediction = self.get_ball_prediction_struct()
 
-    def ballChase(self, packet):
+        if ball_prediction is not None:
+            for i in range(0, ball_prediction.num_slices):
+                prediction_slice = ball_prediction.slices[i]
+                location = prediction_slice.physics.location
+                if(location.z < 94): #on ground
+                    return prediction_slice.game_seconds
+
+
+    def dribble(self, packet):
+
+        timeChange = self.findBallGround() - packet.game_info.seconds_elapsed
+        fballLoc = self.getBallLoc(packet, timeChange, 1)
+
+
+        #original Code:
+        ball_location = Vec3(packet.game_ball.physics.location)
+        ball_velocity = Vec3(packet.game_ball.physics.velocity)
+        main_car = packet.game_cars[self.index]
+        car_velocity = Vec3(main_car.physics.velocity)
+        car_location = Vec3(main_car.physics.location)
+        ballHeight = ball_location.z
+
+        if(ballHeight < 152 and ballHeight > 147):
+            self.beenUp += 1
+        else:
+            self.beenUp = 0
+        if(ballHeight < 152 and ballHeight > 147 and self.beenUp >= 5): #officially dribbling ball
+            pass
+        else:
+            ball_location = Vec3(packet.game_ball.physics.location)
+
+        carSpeed = 1410
+        carSpeedBoost = 2300
+        carMagnitude = self.findMagnitude(car_velocity.x, car_velocity.y)
+        fcarToBall = self.Distance3D(car_location, fballLoc)
+        if(ball_location.z < 94):
+            requiredSpeed = 2300
+        else:
+            requiredSpeed = fcarToBall/timeChange
+
+        #end new
+
+        mirrorBall = Vec3(ball_location.x, ball_location.y, 0)
+        mirrorCar = Vec3(car_location.x, car_location.y, 0)
+
+        car_to_ball = car_location - ball_location
+        # Find the direction of our car using the Orientation class
+
+        car_orientation = Orientation(main_car.physics.rotation)
+        car_direction = car_orientation.forward
+        if(self.index == 0 ):
+            print(car_direction)
+        distFromBall = self.Distance3D(car_location, ball_location)
+        mirrorBall = Vec3(ball_location.x, ball_location.y, 0)
+        mirrorCar = Vec3(car_location.x, car_location.y, 0)
+
+        leg = self.Distance3D(mirrorBall, ball_location)
+        legCar = self.Distance3D(mirrorBall, mirrorCar)
+        distFromGround = self.Distance3D(car_location, mirrorCar)
+        hypotenuse = self.Distance3D(mirrorCar, ball_location)
+        theta = math.asin(leg / hypotenuse)
+
+        self.turn = self.find_correction(car_direction, car_to_ball)
+        self.drift = self.determineDrift(self.find_correction_normal(car_direction, car_to_ball))
+        if(self.manageBoost(self.find_correction_normal(car_direction, car_to_ball)) == 1): #Allowed to boost
+            self.defaultThrottleDribble(requiredSpeed, carMagnitude)
+        else:
+            self.boost = 0
+            self.throttle = 1
+
+    def defaultThrottleDribble(self, target_speed, carMagnitude): #accidentally made a god tier dribble bot:
+        # accelerates the car to a desired speed using throttle and boost
+        car_speed = carMagnitude
+        t = (target_speed) - car_speed
+        self.throttle = self.map(t, 0,1410,-.01,1)
+        if(self.throttle < -1):
+            self.throttle = -1
+        elif(self.throttle > 1):
+            self.throttle = 1
+        self.boost = True if t > 150 and car_speed < 2275 else False
+    def simpleballChase(self, packet):
         ball_location = Vec3(packet.game_ball.physics.location)
         ball_velocity = Vec3(packet.game_ball.physics.velocity)
         main_car = packet.game_cars[self.index]
@@ -195,7 +277,8 @@ class MyBot(BaseAgent):
         yAddend = math.pow((p2.y - p1.y), 2)
         zAddend = math.pow((p2.z - p1.z), 2)
         return math.sqrt(xAddend + yAddend + zAddend)
-
+    def findMagnitude(self, x,y):
+        return math.sqrt(math.pow(x, 2)+math.pow(y, 2))
     def determineJump(self, car_location, ball_location):
 
         if (self.lastCall == 1):
